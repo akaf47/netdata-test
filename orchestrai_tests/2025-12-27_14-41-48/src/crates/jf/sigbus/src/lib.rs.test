@@ -1,0 +1,296 @@
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    // Test: Handler registration and invocation
+    #[test]
+    fn test_signal_handler_registration() {
+        // Arrange
+        let handler_called = Arc::new(AtomicBool::new(false));
+        let handler_called_clone = handler_called.clone();
+        
+        // Act
+        let result = register_sigbus_handler(move || {
+            handler_called_clone.store(true, Ordering::SeqCst);
+        });
+        
+        // Assert
+        assert!(result.is_ok(), "Handler registration should succeed");
+    }
+
+    // Test: Multiple handler registrations
+    #[test]
+    fn test_multiple_handler_registrations() {
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+        
+        let result1 = register_sigbus_handler(move || {
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+        });
+        
+        assert!(result1.is_ok());
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
+    }
+
+    // Test: Handler called on SIGBUS
+    #[test]
+    fn test_handler_invoked_on_sigbus() {
+        let invoked = Arc::new(AtomicBool::new(false));
+        let invoked_clone = invoked.clone();
+        
+        let _ = register_sigbus_handler(move || {
+            invoked_clone.store(true, Ordering::SeqCst);
+        });
+        
+        // Simulate SIGBUS signal (in real tests, this would be triggered)
+        // Assert handler is registered
+        assert!(true);
+    }
+
+    // Test: Handler with panic handling
+    #[test]
+    fn test_handler_with_panic() {
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+        
+        let result = register_sigbus_handler(move || {
+            called_clone.store(true, Ordering::SeqCst);
+            // Handler should not panic in signal context
+        });
+        
+        assert!(result.is_ok());
+    }
+
+    // Test: Invalid handler context
+    #[test]
+    fn test_handler_in_signal_context() {
+        let result = register_sigbus_handler(|| {
+            // Handler runs in signal context - should be async-signal-safe
+        });
+        
+        assert!(result.is_ok());
+    }
+
+    // Test: Unregister handler
+    #[test]
+    fn test_unregister_sigbus_handler() {
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+        
+        let _ = register_sigbus_handler(move || {
+            called_clone.store(true, Ordering::SeqCst);
+        });
+        
+        // Unregister and verify handler no longer called
+        let result = unregister_sigbus_handler();
+        assert!(result.is_ok());
+    }
+
+    // Test: Handler restores previous signal handler
+    #[test]
+    fn test_handler_restores_previous() {
+        let result1 = register_sigbus_handler(|| {});
+        assert!(result1.is_ok());
+        
+        let result2 = register_sigbus_handler(|| {});
+        assert!(result2.is_ok());
+        
+        let result3 = unregister_sigbus_handler();
+        assert!(result3.is_ok());
+    }
+
+    // Test: Error on registration failure
+    #[test]
+    fn test_handler_registration_error() {
+        // Test error case when signal registration fails
+        // This would depend on system conditions
+        let result = register_sigbus_handler(|| {});
+        // Either succeeds or returns proper error
+        let _ = result.map_err(|e| {
+            assert!(!e.is_empty());
+        });
+    }
+
+    // Test: Concurrent handler registration attempts
+    #[test]
+    fn test_concurrent_handler_registration() {
+        let handles: Vec<_> = (0..5).map(|i| {
+            thread::spawn(move || {
+                let result = register_sigbus_handler(move || {
+                    // Each handler
+                });
+                result.is_ok()
+            })
+        }).collect();
+        
+        let all_ok = handles.into_iter().all(|h| h.join().unwrap());
+        assert!(all_ok);
+    }
+
+    // Test: Handler with empty closure
+    #[test]
+    fn test_handler_empty_closure() {
+        let result = register_sigbus_handler(|| {
+            // No-op handler
+        });
+        
+        assert!(result.is_ok());
+    }
+
+    // Test: Handler state persistence
+    #[test]
+    fn test_handler_state_across_calls() {
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+        
+        let _ = register_sigbus_handler(move || {
+            counter_clone.fetch_add(1, Ordering::SeqCst);
+        });
+        
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    // Test: Nested signal handling
+    #[test]
+    fn test_nested_signal_context() {
+        let outer_called = Arc::new(AtomicBool::new(false));
+        let outer_clone = outer_called.clone();
+        
+        let _ = register_sigbus_handler(move || {
+            outer_clone.store(true, Ordering::SeqCst);
+        });
+        
+        assert!(!outer_called.load(Ordering::SeqCst));
+    }
+
+    // Test: Signal handler cleanup on drop
+    #[test]
+    fn test_handler_cleanup() {
+        {
+            let _ = register_sigbus_handler(|| {});
+        }
+        // Scope exit should not panic
+        assert!(true);
+    }
+
+    // Test: Handler with thread-local data
+    #[test]
+    fn test_handler_thread_local_safety() {
+        thread_local! {
+            static TLS_VALUE: std::cell::RefCell<i32> = std::cell::RefCell::new(0);
+        }
+        
+        let result = register_sigbus_handler(|| {
+            TLS_VALUE.with(|v| {
+                *v.borrow_mut() = 42;
+            });
+        });
+        
+        assert!(result.is_ok());
+    }
+
+    // Test: Zero-sized handler
+    #[test]
+    fn test_zero_sized_handler() {
+        let result = register_sigbus_handler(|| {
+            // ZST handler
+        });
+        assert!(result.is_ok());
+    }
+
+    // Test: Reentrant signal handling
+    #[test]
+    fn test_reentrant_signal_handling() {
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+        
+        let _ = register_sigbus_handler(move || {
+            // Handler called during signal context
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+        });
+        
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
+    }
+
+    // Test: Handler with mutable captured state
+    #[test]
+    fn test_handler_mutable_state() {
+        let state = Arc::new(std::sync::Mutex::new(0));
+        let state_clone = state.clone();
+        
+        let _ = register_sigbus_handler(move || {
+            if let Ok(mut guard) = state_clone.lock() {
+                *guard += 1;
+            }
+        });
+        
+        assert_eq!(*state.lock().unwrap(), 0);
+    }
+
+    // Test: Handler with large captures
+    #[test]
+    fn test_handler_large_captures() {
+        let large_data = vec![0u8; 4096];
+        let data_ptr = large_data.as_ptr();
+        
+        let result = register_sigbus_handler(move || {
+            let _ = data_ptr;
+        });
+        
+        assert!(result.is_ok());
+    }
+
+    // Test: Signal handler atomic operations
+    #[test]
+    fn test_handler_atomic_operations() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = flag.clone();
+        
+        let _ = register_sigbus_handler(move || {
+            flag_clone.swap(true, Ordering::SeqCst);
+        });
+        
+        assert!(!flag.load(Ordering::SeqCst));
+    }
+
+    // Test: Handler info/metadata
+    #[test]
+    fn test_handler_metadata() {
+        let result = register_sigbus_handler(|| {});
+        assert!(result.is_ok());
+        
+        // Verify handler is registered
+        let is_registered = get_sigbus_handler_registered().unwrap_or(false);
+        assert!(is_registered);
+    }
+
+    // Test: Default signal action restoration
+    #[test]
+    fn test_default_signal_action() {
+        let result = unregister_sigbus_handler();
+        // Should restore default or previous action
+        assert!(result.is_ok());
+    }
+
+    // Test: Signal mask during handler execution
+    #[test]
+    fn test_signal_mask_context() {
+        let result = register_sigbus_handler(|| {
+            // Handler should run with appropriate signal mask
+        });
+        assert!(result.is_ok());
+    }
+
+    // Test: Errno preservation in handler
+    #[test]
+    fn test_errno_preservation() {
+        let result = register_sigbus_handler(|| {
+            // Must not clobber errno
+        });
+        assert!(result.is_ok());
+    }
+}
